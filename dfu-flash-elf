@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+#
+# @(#) dfu-flash-elf
+#
+# This script flashes ELF firmware to an STM32 device over USB in
+# bootloader DFU Mode.
+#
+: ${FILE_CMD:='/usr/bin/file'}
+: ${ARM_NONE_OBJCOPY_CMD:='/usr/bin/arm-none-eabi-objcopy'}
+: ${BIN2DFU_CMD:="${HOME}/bin/bin2dfu"}
+: ${DFU_UTIL_CMD:='/usr/bin/dfu-util'}
+: ${GREP_CMD:='/bin/grep'}
+: ${LSUSB_CMD:='/usr/bin/lsusb'}
+
+# Default VID, PID and firmware flash memory address for STM32 MCU
+: ${BOOTLOADER_VID:='0x0483'}
+: ${BOOTLOADER_PID:='0xDF11'}
+: ${TEXT_ADDRESS:='0x08000000'}
+
+validate-elf ()
+{
+    local firmware_elf=$1
+
+    local status=''
+
+    case $($FILE_CMD "$firmware_elf") in
+        *'ELF 32-bit LSB'*) status=0 ;;
+        *) status=1 ;;
+    esac
+
+    return $status
+}
+
+generate-bin ()
+{
+    local firmware_elf=$1
+
+    local firmware_bin=${firmware_elf%.elf}.bin
+
+    $ARM_NONE_OBJCOPY_CMD -O binary "$firmware_elf" "$firmware_bin" || return $?
+    echo "$firmware_bin"
+}
+
+generate-dfu ()
+{
+    local firmware_bin=$1
+
+    local firmware_dfu=${firmware_bin%.bin}.dfu
+
+    $BIN2DFU_CMD -D "${BOOTLOADER_VID}:${BOOTLOADER_PID}" \
+                   -b "${TEXT_ADDRESS}:${firmware_bin}" \
+                   "$firmware_dfu" || return $?
+    echo "$firmware_dfu"
+}
+
+flash-dfu ()
+{
+    local firmware_dfu=$1
+
+    if $LSUSB_CMD | $GREP_CMD -q 'DFU Mode'; then
+        $DFU_UTIL_CMD -a 0 -d "${BOOTLOADER_VID}:${BOOTLOADER_PID}" \
+                      -D "$firmware_dfu" || return $?
+    else
+        echo "${script_name}: Device must be in DFU mode to flash" >&2
+        return 1
+    fi
+}
+
+if test ."$0" = ."${BASH_SOURCE[0]}"; then
+    declare script_name=${0##*/}
+    declare firmware_elf=$1
+
+    if (( $# == 0 )); then
+        echo "Usage: ${script_name} ELF-FILE" >&2
+        exit 0
+    elif test ! -f "$firmware_elf"; then
+        echo "${script_name}: ${firmware_elf}: No such file or directory" >&2
+        echo "Usage: ${script_name} ELF-FILE" >&2
+        exit 1
+    elif ! validate-elf "$firmware_elf"; then
+        echo "${script_name}: ${firmware_elf}: Expected ELF executable" >&2
+        echo "Usage: ${script_name} ELF-FIRMWARE" >&2
+        exit 2
+    fi
+
+    declare firmware_bin=''
+    declare firmware_dfu=''
+
+    firmware_bin=$(generate-bin "$firmware_elf") || exit $?
+    firmware_dfu=$(generate-dfu "$firmware_bin") || exit $?
+    flash-dfu "$firmware_dfu" || exit $?
+fi
