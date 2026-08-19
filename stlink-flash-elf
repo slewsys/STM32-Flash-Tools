@@ -5,11 +5,43 @@
 # This script flashes ELF firmware to an STM32 device over USB in
 # ST-Link Mode.
 #
-: ${FILE_CMD:='/usr/bin/file'}
+# The following values are defaults and can be changed by setting the
+# corresponding environment variable.
+#
+#     ENVIRONMENT VARIABLE               DEFAULT VALUE
+#     ====================               =============
+#     TEXT_ADDRESS                       0x08000000
+#
 : ${ARM_NONE_OBJCOPY_CMD:='/usr/bin/arm-none-eabi-objcopy'}
+: ${CAT_CMD:='/bin/cat'}
+: ${FILE_CMD:='/usr/bin/file'}
+: ${LS_CMD:='/bin/ls'}
+: ${READLINK_CMD:='/usr/bin/readlink'}
+: ${RM_CMD:='/bin/rm'}
 : ${ST_FLASH_CMD:='/usr/bin/st-flash'}
 
 : ${TEXT_ADDRESS:='0x08000000'}
+
+usage ()
+{
+    $CAT_CMD >&2 <<EOF
+$1
+Usage: ${script_name} ELF-FILE
+EOF
+}
+
+# More OS-agnstoic readlink for existent files/directories.
+resolve-existing ()
+{
+    case $($READLINK_CMD --version 2>&1) in
+        *coreutils*)
+            $READLINK_CMD -e "$@" || return $?
+            ;;
+        *)
+            $READLINK_CMD -f N "$@" || return $?
+            ;;
+    esac
+}
 
 validate-elf ()
 {
@@ -42,19 +74,31 @@ stlink-flash-firmware ()
     $ST_FLASH_CMD write "$firmware_bin" "$TEXT_ADDRESS" || return $?
 }
 
-if test ."$0" = ."${BASH_SOURCE[0]}"; then
-    declare script_name=${0##*/}
-    declare firmware_elf=$1
+clean-up ()
+{
+    local firmware_bin=$1
 
-    if (( $# == 0 )); then
-        echo "Usage: ${script_name} ELF-FIRMWARE" >&2
-    elif test ! -f "$firmware_elf"; then
-        echo "${script_name}: ${firmware_elf}: No such file or directory" >&2
-        echo "Usage: ${script_name} ELF-FILE" >&2
+    $RM_CMD -f "$firmware_bin" || return $?
+}
+
+if test ."$0" = ."${BASH_SOURCE[0]}"; then
+    declare script=''
+    declare script_name=''
+
+    script=$(resolve-existing "$0") || exit $?
+    script_name=${script##*/}
+
+    declare default_firmware_elf=''
+
+    default_firmware_elf=$($LS_CMD "${script_dir}/"*.elf) || exit $?
+
+    declare firmware_elf=${1:-"$default_firmware_elf"}
+
+    if test ! -f "$firmware_elf"; then
+        usage "${script_name}: ${firmware_elf}: No such file or directory"
         exit 1
     elif ! validate-elf "$firmware_elf"; then
-        echo "${script_name}: ${firmware_elf}: Expected ELF executable" >&2
-        echo "Usage: ${script_name} ELF-FIRMWARE" >&2
+        usage "${script_name}: ${firmware_elf}: Expected ELF executable"
         exit 2
     fi
 
@@ -62,4 +106,5 @@ if test ."$0" = ."${BASH_SOURCE[0]}"; then
 
     firmware_bin=$(generate-bin "$firmware_elf") || exit $?
     stlink-flash-firmware "$firmware_bin" || exit $?
+    clean-up "$firmware_bin" || exit $?
 fi
